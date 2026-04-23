@@ -1126,7 +1126,21 @@ body::before {
 // ══════════════════════════════════════════════════════════
 // 🚀 IMPORTANT: After deploying to Railway, replace this with your Railway URL
 // Example: const BASE_URL = 'https://socialsync-backend.up.railway.app';
-const BASE_URL = 'https://socialsync.up.railway.app';
+let BASE_URL = localStorage.getItem('ss_backend_url') || '';
+
+// Auto-prompt for Railway URL if not set
+(function() {
+  if (!BASE_URL) {
+    const url = window.prompt(
+      '🚀 Enter your Railway backend URL:\n(e.g. https://socialsync-production.up.railway.app)',
+      'https://'
+    );
+    if (url && url.startsWith('https://')) {
+      BASE_URL = url.replace(/\/$/, ''); // remove trailing slash
+      localStorage.setItem('ss_backend_url', BASE_URL);
+    }
+  }
+})();
 
 // ── State ──────────────────────────────────────────────────
 let token = localStorage.getItem('ss_token');
@@ -1229,6 +1243,16 @@ function logout() {
   if (socket) socket.disconnect();
   localStorage.removeItem('ss_token');
   location.reload();
+}
+
+function changeServerUrl() {
+  const url = window.prompt('Enter your Railway backend URL:', BASE_URL);
+  if (url && url.startsWith('https://')) {
+    BASE_URL = url.replace(/\/$/, '');
+    localStorage.setItem('ss_backend_url', BASE_URL);
+    toast('✅ Server URL updated! Reloading...');
+    setTimeout(() => location.reload(), 1000);
+  }
 }
 
 // ══════════════════════════════════════════════════════════
