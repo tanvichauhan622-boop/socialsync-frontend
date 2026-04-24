@@ -6,6 +6,7 @@
 <title>SocialSync — Connect Nearby</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 <style>
 :root {
@@ -1149,12 +1150,15 @@ let onlineUsers = new Set();
 // ══════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════
-window.addEventListener('load', async () => {
-  // Load Supabase SDK dynamically
-  await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js');
-
-  // Init Supabase client
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+window.addEventListener('DOMContentLoaded', () => {
+  // Supabase SDK is already loaded via <script> tag in <head>
+  try {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  } catch(e) {
+    console.error('Supabase init failed:', e);
+    document.querySelector('#loadingOverlay p').textContent = 'Failed to load. Check your internet connection.';
+    return;
+  }
 
   // Interest tag clicks
   document.querySelectorAll('#interestTags .tag').forEach(t => {
@@ -1167,49 +1171,44 @@ window.addEventListener('load', async () => {
     });
   });
 
-  // Check existing session
-  const { data: { session } } = await supabase.auth.getSession();
-  if (session) {
-    currentSession = session;
-    currentUser = {
-      _id: session.user.id,
-      name: session.user.user_metadata?.name || session.user.email,
-      age: session.user.user_metadata?.age || '',
-      gender: session.user.user_metadata?.gender || '',
-      interests: session.user.user_metadata?.interests || []
-    };
-    hideLoading();
-    launchApp();
-    return;
-  }
-
-  hideLoading();
-
-  // Listen for auth changes
+  // Listen for auth state — fires immediately if session exists
   supabase.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_IN' && session) {
-      currentSession = session;
-      currentUser = {
-        _id: session.user.id,
-        name: session.user.user_metadata?.name || session.user.email,
-        age: session.user.user_metadata?.age || '',
-        gender: session.user.user_metadata?.gender || '',
-        interests: session.user.user_metadata?.interests || []
-      };
+    console.log('Auth event:', event, session ? 'has session' : 'no session');
+    if (event === 'INITIAL_SESSION') {
+      hideLoading(); // Always hide loading after initial check
+      if (session) {
+        setCurrentUser(session);
+        launchApp();
+      }
+      // else: show login screen (already visible by default)
+    } else if (event === 'SIGNED_IN') {
+      setCurrentUser(session);
+      hideLoading();
       launchApp();
+    } else if (event === 'SIGNED_OUT') {
+      location.reload();
     }
   });
+
+  // Safety fallback — if onAuthStateChange never fires (e.g. CDN blocked), show login after 4s
+  setTimeout(() => {
+    const overlay = document.getElementById('loadingOverlay');
+    if (!overlay.classList.contains('hidden')) {
+      console.warn('Auth check timed out, showing login');
+      hideLoading();
+    }
+  }, 4000);
 });
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
+function setCurrentUser(session) {
+  currentSession = session;
+  currentUser = {
+    _id: session.user.id,
+    name: session.user.user_metadata?.name || session.user.email.split('@')[0],
+    age: session.user.user_metadata?.age || '',
+    gender: session.user.user_metadata?.gender || '',
+    interests: session.user.user_metadata?.interests || []
+  };
 }
 
 function hideLoading() {
