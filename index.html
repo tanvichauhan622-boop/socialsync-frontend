@@ -299,7 +299,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 // ══════════════════════════════════════════
 const SUPA_URL = 'https://nevkbayvodyomfxsdzhm.supabase.co';
 const SUPA_KEY = 'sb_publishable_rL_xpUknm1gKSMOPnHR4WQ_4GsvmXJl';
-const RAIL_URL = localStorage.getItem('rail_url') || '';
+const RAIL_URL = 'https://socialsync.up.railway.app';
 
 // ── State ──
 let sb, session, me, sock;
@@ -446,18 +446,6 @@ function showApp() {
   document.getElementById('app').classList.add('on');
   document.getElementById('hName').textContent = me.name;
   document.getElementById('hAv').textContent = me.name[0].toUpperCase();
-
-  // Ask for Railway URL once if not set
-  if (!RAIL_URL) {
-    setTimeout(() => {
-      const u = prompt('Enter your Railway backend URL:\n(e.g. https://socialsync-xyz.up.railway.app)\n\nThis enables chat and nearby features.');
-      if (u && u.startsWith('https://')) {
-        localStorage.setItem('rail_url', u.replace(/\/$/, ''));
-        location.reload();
-      }
-    }, 500);
-    return;
-  }
 
   connectSocket();
   fetchNearby();
