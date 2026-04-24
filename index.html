@@ -970,6 +970,10 @@ body::before {
           <label>Display Name</label>
           <input type="text" id="regName" placeholder="e.g. Priya, Alex..." autocomplete="off" />
         </div>
+        <div class="field">
+          <label>Email</label>
+          <input type="email" id="regEmail" placeholder="you@email.com" />
+        </div>
         <div class="field-row">
           <div class="field">
             <label>Age</label>
@@ -1005,20 +1009,20 @@ body::before {
           <span class="tag" data-v="🎉 Parties">🎉 Parties</span>
           <span class="tag" data-v="🧘 Wellness">🧘 Wellness</span>
         </div>
-        <button class="btn-primary" onclick="register()">Create Account →</button>
+        <button class="btn-primary" id="regBtn" onclick="register()">Create Account →</button>
       </div>
 
       <!-- Login Form -->
       <div id="formLogin" style="display:none">
         <div class="field">
-          <label>Display Name</label>
-          <input type="text" id="loginName" placeholder="Your name" autocomplete="off" />
+          <label>Email</label>
+          <input type="email" id="loginEmail" placeholder="you@email.com" />
         </div>
         <div class="field">
           <label>Password</label>
           <input type="password" id="loginPass" placeholder="Your password" />
         </div>
-        <button class="btn-primary" onclick="loginUser()" style="margin-top:8px">Sign In →</button>
+        <button class="btn-primary" id="loginBtn" onclick="loginUser()" style="margin-top:8px">Sign In →</button>
       </div>
     </div>
   </div>
@@ -1122,43 +1126,37 @@ body::before {
 
 <script>
 // ══════════════════════════════════════════════════════════
-//  CONFIG — change BASE_URL if deploying to a server
+//  SUPABASE CONFIG
 // ══════════════════════════════════════════════════════════
-// 🚀 IMPORTANT: After deploying to Railway, replace this with your Railway URL
-// Example: const BASE_URL = 'https://socialsync-backend.up.railway.app';
-let BASE_URL = localStorage.getItem('ss_backend_url') || '';
+const SUPABASE_URL = 'https://nevkbayvodyomfxsdzhm.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_rL_xpUknm1gKSMOPnHR4WQ_4GsvmXJl';
 
-// Auto-prompt for Railway URL if not set
-(function() {
-  if (!BASE_URL) {
-    const url = window.prompt(
-      '🚀 Enter your Railway backend URL:\n(e.g. https://socialsync-production.up.railway.app)',
-      'https://'
-    );
-    if (url && url.startsWith('https://')) {
-      BASE_URL = url.replace(/\/$/, ''); // remove trailing slash
-      localStorage.setItem('ss_backend_url', BASE_URL);
-    }
-  }
-})();
+// Railway backend for chat, plans, nearby
+const RAILWAY_URL = localStorage.getItem('ss_railway_url') || '';
 
 // ── State ──────────────────────────────────────────────────
-let token = localStorage.getItem('ss_token');
+let supabase = null;
 let currentUser = null;
+let currentSession = null;
 let socket = null;
 let activeChatUser = null;
-let chatMessages = {}; // userId → [msgs]
+let chatMessages = {};
 let nearbyUsers = [];
 let plans = [];
 let selectedInterests = [];
-let userCoords = null; // {lat, lng}
 let onlineUsers = new Set();
 
 // ══════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════
 window.addEventListener('load', async () => {
-  // Interest tags
+  // Load Supabase SDK dynamically
+  await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js');
+
+  // Init Supabase client
+  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  // Interest tag clicks
   document.querySelectorAll('#interestTags .tag').forEach(t => {
     t.addEventListener('click', () => {
       t.classList.toggle('selected');
@@ -1169,28 +1167,57 @@ window.addEventListener('load', async () => {
     });
   });
 
+  // Check existing session
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session) {
+    currentSession = session;
+    currentUser = {
+      _id: session.user.id,
+      name: session.user.user_metadata?.name || session.user.email,
+      age: session.user.user_metadata?.age || '',
+      gender: session.user.user_metadata?.gender || '',
+      interests: session.user.user_metadata?.interests || []
+    };
+    hideLoading();
+    launchApp();
+    return;
+  }
+
   hideLoading();
 
-  if (token) {
-    try {
-      const res = await api('GET', '/api/users/me');
-      if (res.ok) {
-        currentUser = await res.json();
-        launchApp();
-        return;
-      }
-    } catch (_) {}
-    localStorage.removeItem('ss_token');
-    token = null;
-  }
+  // Listen for auth changes
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session) {
+      currentSession = session;
+      currentUser = {
+        _id: session.user.id,
+        name: session.user.user_metadata?.name || session.user.email,
+        age: session.user.user_metadata?.age || '',
+        gender: session.user.user_metadata?.gender || '',
+        interests: session.user.user_metadata?.interests || []
+      };
+      launchApp();
+    }
+  });
 });
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
 
 function hideLoading() {
   document.getElementById('loadingOverlay').classList.add('hidden');
 }
 
 // ══════════════════════════════════════════════════════════
-//  AUTH
+//  AUTH — SUPABASE
 // ══════════════════════════════════════════════════════════
 function switchTab(tab) {
   document.getElementById('tabSignup').classList.toggle('active', tab === 'signup');
@@ -1203,56 +1230,83 @@ async function register() {
   const name = document.getElementById('regName').value.trim();
   const age = document.getElementById('regAge').value;
   const gender = document.getElementById('regGender').value;
+  const email = document.getElementById('regEmail').value.trim();
   const password = document.getElementById('regPass').value;
 
-  if (!name || !age || !gender || !password) return toast('⚠️ Please fill in all fields');
+  if (!name || !age || !gender || !email || !password) return toast('⚠️ Please fill in all fields');
   if (password.length < 6) return toast('⚠️ Password must be at least 6 characters');
+  if (!email.includes('@')) return toast('⚠️ Enter a valid email');
 
-  try {
-    const res = await api('POST', '/api/auth/register', { name, age: parseInt(age), gender, interests: selectedInterests, password });
-    const data = await res.json();
-    if (!res.ok) return toast('❌ ' + (data.error || data.errors?.[0]?.msg || 'Error'));
-    token = data.token;
-    currentUser = data.user;
-    localStorage.setItem('ss_token', token);
-    launchApp();
-  } catch (err) {
-    toast('❌ Cannot connect to server. Is it running?');
+  setBtnLoading('regBtn', true, 'Creating account…');
+
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { name, age: parseInt(age), gender, interests: selectedInterests }
+    }
+  });
+
+  setBtnLoading('regBtn', false, 'Create Account →');
+
+  if (error) return toast('❌ ' + error.message);
+
+  if (data.user && !data.session) {
+    // Email confirmation required
+    showConfirmMsg(email);
+    return;
   }
+
+  toast('✅ Account created!');
 }
 
 async function loginUser() {
-  const name = document.getElementById('loginName').value.trim();
+  const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPass').value;
-  if (!name || !password) return toast('⚠️ Please fill in all fields');
 
-  try {
-    const res = await api('POST', '/api/auth/login', { name, password });
-    const data = await res.json();
-    if (!res.ok) return toast('❌ ' + (data.error || 'Login failed'));
-    token = data.token;
-    currentUser = data.user;
-    localStorage.setItem('ss_token', token);
-    launchApp();
-  } catch (err) {
-    toast('❌ Cannot connect to server');
-  }
+  if (!email || !password) return toast('⚠️ Please fill in all fields');
+
+  setBtnLoading('loginBtn', true, 'Signing in…');
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+  setBtnLoading('loginBtn', false, 'Sign In →');
+
+  if (error) return toast('❌ ' + error.message);
+
+  toast('✅ Welcome back!');
 }
 
-function logout() {
+async function logout() {
   if (socket) socket.disconnect();
-  localStorage.removeItem('ss_token');
+  await supabase.auth.signOut();
+  localStorage.removeItem('ss_railway_url');
   location.reload();
 }
 
-function changeServerUrl() {
-  const url = window.prompt('Enter your Railway backend URL:', BASE_URL);
-  if (url && url.startsWith('https://')) {
-    BASE_URL = url.replace(/\/$/, '');
-    localStorage.setItem('ss_backend_url', BASE_URL);
-    toast('✅ Server URL updated! Reloading...');
-    setTimeout(() => location.reload(), 1000);
-  }
+function showConfirmMsg(email) {
+  document.getElementById('formSignup').innerHTML = `
+    <div style="text-align:center;padding:20px 0;">
+      <div style="font-size:2.5rem;margin-bottom:16px;">📧</div>
+      <h3 style="font-size:1.1rem;margin-bottom:8px;">Check your email!</h3>
+      <p style="color:var(--text2);font-size:0.88rem;line-height:1.6;">
+        We sent a confirmation link to<br>
+        <strong style="color:var(--text)">${email}</strong><br><br>
+        Click the link to activate your account, then come back and sign in.
+      </p>
+      <button class="btn-primary" style="margin-top:20px;width:auto;padding:10px 24px;" onclick="switchTab('login')">
+        Go to Sign In →
+      </button>
+    </div>
+  `;
+}
+
+function setBtnLoading(id, loading, text) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = loading;
+  btn.textContent = text;
+  btn.style.opacity = loading ? '0.7' : '1';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1264,6 +1318,20 @@ function launchApp() {
   document.getElementById('headerName').textContent = currentUser.name;
   document.getElementById('headerAvatar').textContent = currentUser.name[0].toUpperCase();
 
+  // Ask for Railway URL if not set
+  if (!RAILWAY_URL) {
+    const url = window.prompt(
+      'Enter your Railway backend URL to enable chat & plans:
+(e.g. https://socialsync-production.up.railway.app)',
+      'https://'
+    );
+    if (url && url.startsWith('https://')) {
+      localStorage.setItem('ss_railway_url', url.replace(/\/$/, ''));
+      location.reload();
+      return;
+    }
+  }
+
   connectSocket();
   fetchNearby();
   fetchPlans();
@@ -1274,20 +1342,17 @@ function launchApp() {
 //  SOCKET
 // ══════════════════════════════════════════════════════════
 function connectSocket() {
-  socket = io(BASE_URL, { auth: { token } });
+  if (!RAILWAY_URL) return;
+  const token = currentSession?.access_token;
+  socket = io(RAILWAY_URL, { auth: { token } });
 
-  socket.on('connect', () => {
-    toast(`✅ Connected as ${currentUser.name}`);
-  });
-
-  socket.on('connect_error', (err) => {
-    showError('Real-time connection failed: ' + err.message);
-  });
+  socket.on('connect', () => toast('✅ Connected as ' + currentUser.name));
+  socket.on('connect_error', (err) => showError('Real-time error: ' + err.message));
 
   socket.on('user:online', ({ userId, name }) => {
     onlineUsers.add(userId);
     updateOnlinePill();
-    toast(`👋 ${name} just came online`);
+    toast('👋 ' + name + ' just came online');
     fetchNearby();
   });
 
@@ -1296,44 +1361,33 @@ function connectSocket() {
     updateOnlinePill();
   });
 
-  socket.on('location:updated', ({ userId, name, lat, lng }) => {
-    const u = nearbyUsers.find(u => u._id === userId);
-    if (u) {
-      // Update map pin position (simulate with random shift for demo)
-      renderMap();
-    }
-  });
+  socket.on('location:updated', () => renderMap());
 
   socket.on('chat:message', (msg) => {
     const otherId = msg.sender._id === currentUser._id
-      ? (activeChatUser?._id)
+      ? activeChatUser?._id
       : msg.sender._id;
     if (!otherId) return;
-
     if (!chatMessages[otherId]) chatMessages[otherId] = [];
     chatMessages[otherId].push(msg);
-
     if (activeChatUser?._id === otherId || activeChatUser?._id === msg.sender._id) {
       renderChatMessages();
     }
   });
 
   socket.on('chat:notification', ({ from, text }) => {
-    if (from !== activeChatUser?.name) {
-      toast(`💬 ${from}: ${text.substring(0, 40)}`);
-    }
+    if (from !== activeChatUser?.name) toast('💬 ' + from + ': ' + text.substring(0, 40));
   });
 
   socket.on('plan:new', (plan) => {
     plans.unshift(plan);
     renderPlans();
-    toast(`📅 New plan: "${plan.title}"`);
+    toast('📅 New plan: "' + plan.title + '"');
   });
 
-  socket.on('plan:attendee_joined', ({ planId, userName }) => {
-    toast(`👥 ${userName} joined a plan`);
-    fetchPlans();
-  });
+  socket.on('plan:attendee_joined', () => fetchPlans());
+
+  socket.on('disconnect', () => showError('Disconnected from server'));
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1344,29 +1398,16 @@ function startGeolocation() {
     document.getElementById('locationChip').textContent = 'No GPS';
     return;
   }
-
-  const opts = { enableHighAccuracy: true, maximumAge: 30000 };
-
   navigator.geolocation.watchPosition(
     pos => {
       const { latitude: lat, longitude: lng } = pos.coords;
-      userCoords = { lat, lng };
-      document.getElementById('locationChip').textContent = `📡 GPS Active`;
-
-      // Send to server
-      if (socket?.connected) {
-        socket.emit('location:update', { lat, lng });
-      }
+      document.getElementById('locationChip').textContent = 'GPS Active';
+      if (socket?.connected) socket.emit('location:update', { lat, lng });
       api('PUT', '/api/users/location', { lat, lng }).catch(() => {});
-
-      // Refresh nearby with real coords
       fetchNearby(lat, lng);
     },
-    err => {
-      document.getElementById('locationChip').textContent = '📍 Demo Mode';
-      console.warn('Geolocation error:', err.message);
-    },
-    opts
+    () => { document.getElementById('locationChip').textContent = 'Demo Mode'; },
+    { enableHighAccuracy: true, maximumAge: 30000 }
   );
 }
 
@@ -1376,33 +1417,29 @@ function startGeolocation() {
 async function fetchNearby(lat, lng) {
   try {
     let url = '/api/users/nearby';
-    if (lat && lng) url += `?lat=${lat}&lng=${lng}&radius=10000`;
+    if (lat && lng) url += '?lat=' + lat + '&lng=' + lng + '&radius=10000';
     const res = await api('GET', url);
     if (!res.ok) return;
     nearbyUsers = await res.json();
     renderNearby();
     renderMap();
     updateOnlinePill();
-  } catch (err) {
-    console.error('Fetch nearby error:', err);
-  }
+  } catch (err) { console.error(err); }
 }
 
 function renderNearby() {
   const list = document.getElementById('nearbyList');
   document.getElementById('peopleCount').textContent = nearbyUsers.length;
-
   if (!nearbyUsers.length) {
-    list.innerHTML = `<div class="chat-empty"><div class="chat-empty-icon">🌐</div><p>No one else is online yet.<br>Invite friends to join!</p></div>`;
+    list.innerHTML = '<div class="chat-empty"><div class="chat-empty-icon">🌐</div><p>No one else online yet.<br>Invite friends!</p></div>';
     return;
   }
-
   list.innerHTML = nearbyUsers.map(u => `
     <div class="person-row ${activeChatUser?._id === u._id ? 'active' : ''}" onclick="openChat('${u._id}')">
       <div class="avatar sm">${u.name[0]}</div>
       <div class="person-details">
         <div class="person-name">${u.name}, ${u.age}</div>
-        <div class="person-meta">${u.interests?.slice(0,2).join(' ') || 'No interests set'}</div>
+        <div class="person-meta">${(u.interests||[]).slice(0,2).join(' ') || 'No interests'}</div>
       </div>
       <div class="dist-badge">${u.distance != null ? u.distance + 'km' : '🟢'}</div>
     </div>
@@ -1414,28 +1451,18 @@ function renderNearby() {
 // ══════════════════════════════════════════════════════════
 function renderMap() {
   const canvas = document.getElementById('mapCanvas');
-
-  // You are always at center
   let html = `<div class="map-pin me" style="left:50%;top:50%;transform:translate(-50%,-50%);">
-    <div class="pin-tooltip">You</div>
-    YOU
-  </div>`;
-
+    <div class="pin-tooltip">You</div>YOU</div>`;
   nearbyUsers.forEach((u, i) => {
-    // Spread users around the map in a deterministic but varied way
-    const angle = (i / nearbyUsers.length) * 2 * Math.PI + 0.5;
-    const radius = 20 + (i % 3) * 12;
-    const x = 50 + Math.cos(angle) * radius;
-    const y = 50 + Math.sin(angle) * radius;
-
+    const angle = (i / Math.max(nearbyUsers.length, 1)) * 2 * Math.PI + 0.5;
+    const r = 20 + (i % 3) * 12;
+    const x = 50 + Math.cos(angle) * r;
+    const y = 50 + Math.sin(angle) * r;
     html += `<div class="map-pin" style="left:${x}%;top:${y}%;" onclick="openChat('${u._id}')">
-      <div class="pin-tooltip">${u.name}</div>
-      ${u.name[0]}
-    </div>`;
+      <div class="pin-tooltip">${u.name}</div>${u.name[0]}</div>`;
   });
-
   canvas.innerHTML = html;
-  document.getElementById('mapChip').textContent = `📍 ${nearbyUsers.length + 1} people`;
+  document.getElementById('mapChip').textContent = '📍 ' + (nearbyUsers.length + 1) + ' people';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1444,14 +1471,10 @@ function renderMap() {
 async function openChat(userId) {
   const user = nearbyUsers.find(u => u._id === userId);
   if (!user) return;
-
   activeChatUser = user;
-  renderNearby(); // update active highlight
-
+  renderNearby();
   document.getElementById('chatEmpty').style.display = 'none';
   document.getElementById('chatView').style.display = 'flex';
-
-  // Render chat header
   document.getElementById('chatView').innerHTML = `
     <div class="chat-top">
       <div class="avatar">${user.name[0]}</div>
@@ -1466,18 +1489,13 @@ async function openChat(userId) {
       <button class="send-btn" onclick="sendMessage()">↑</button>
     </div>
   `;
-
-  // Load history from server
   if (!chatMessages[userId]) {
     try {
-      const res = await api('GET', `/api/messages/${userId}`);
-      if (res.ok) {
-        chatMessages[userId] = await res.json();
-      }
+      const res = await api('GET', '/api/messages/' + userId);
+      if (res.ok) chatMessages[userId] = await res.json();
     } catch (_) {}
     if (!chatMessages[userId]) chatMessages[userId] = [];
   }
-
   renderChatMessages();
   document.getElementById('msgInput')?.focus();
 }
@@ -1485,20 +1503,16 @@ async function openChat(userId) {
 function renderChatMessages() {
   const container = document.getElementById('chatMessages');
   if (!container || !activeChatUser) return;
-
   const msgs = chatMessages[activeChatUser._id] || [];
-
   if (!msgs.length) {
     container.innerHTML = `<div style="text-align:center;color:var(--text3);font-size:0.82rem;margin:auto;">Say hi to ${activeChatUser.name}! 👋</div>`;
     return;
   }
-
   container.innerHTML = msgs.map(m => {
     const isMine = (m.sender?._id || m.sender) === currentUser._id;
     const time = new Date(m.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     return `<div class="msg ${isMine ? 'sent' : 'received'}">${m.text}<div class="msg-time">${time}</div></div>`;
   }).join('');
-
   container.scrollTop = container.scrollHeight;
 }
 
@@ -1506,7 +1520,6 @@ function sendMessage() {
   const input = document.getElementById('msgInput');
   const text = input?.value?.trim();
   if (!text || !activeChatUser || !socket) return;
-
   socket.emit('chat:send', { toUserId: activeChatUser._id, text });
   input.value = '';
 }
@@ -1526,15 +1539,12 @@ async function fetchPlans() {
 function renderPlans() {
   const list = document.getElementById('plansList');
   if (!plans.length) {
-    list.innerHTML = `<div class="chat-empty" style="height:auto;padding:20px;"><p style="font-size:0.82rem;">No upcoming plans.<br>Create the first one!</p></div>`;
+    list.innerHTML = '<div class="chat-empty" style="height:auto;padding:20px;"><p style="font-size:0.82rem;">No upcoming plans.<br>Create the first one!</p></div>';
     return;
   }
-
   list.innerHTML = plans.map(p => {
-    const attendeeCount = p.attendees?.length || 0;
     const isJoined = p.attendees?.some(a => (a._id || a) === currentUser._id);
     const timeStr = new Date(p.time).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-
     return `<div class="plan-card">
       <div class="plan-card-top">
         <div class="plan-emoji">${p.category}</div>
@@ -1546,7 +1556,7 @@ function renderPlans() {
       <div class="plan-meta">
         <span>📍 ${p.location}</span>
         <span>🕐 ${timeStr}</span>
-        <span>👥 ${attendeeCount}</span>
+        <span>👥 ${p.attendees?.length || 0}</span>
       </div>
       <button class="join-btn ${isJoined ? 'joined' : ''}" onclick="joinPlan('${p._id}')">
         ${isJoined ? '✓ Joined' : 'Join Plan'}
@@ -1555,13 +1565,8 @@ function renderPlans() {
   }).join('');
 }
 
-function openPlanModal() {
-  document.getElementById('planModal').classList.add('active');
-}
-
-function closePlanModal() {
-  document.getElementById('planModal').classList.remove('active');
-}
+function openPlanModal() { document.getElementById('planModal').classList.add('active'); }
+function closePlanModal() { document.getElementById('planModal').classList.remove('active'); }
 
 async function createPlan() {
   const title = document.getElementById('pTitle').value.trim();
@@ -1569,50 +1574,38 @@ async function createPlan() {
   const time = document.getElementById('pTime').value;
   const description = document.getElementById('pDesc').value.trim();
   const category = document.getElementById('pCat').value;
-
   if (!title || !location || !time) return toast('⚠️ Fill in title, location and time');
-
   try {
     const res = await api('POST', '/api/plans', { title, location, time, description, category });
-    if (!res.ok) {
-      const d = await res.json();
-      return toast('❌ ' + (d.error || 'Error creating plan'));
-    }
+    if (!res.ok) { const d = await res.json(); return toast('❌ ' + (d.error || 'Error')); }
     const plan = await res.json();
     plans.unshift(plan);
     renderPlans();
     socket?.emit('plan:created', plan);
     closePlanModal();
     toast('🎉 Plan created!');
-    // Clear
     ['pTitle','pLoc','pTime','pDesc'].forEach(id => document.getElementById(id).value = '');
-  } catch (_) {
-    toast('❌ Server error');
-  }
+  } catch (_) { toast('❌ Server error'); }
 }
 
 async function joinPlan(planId) {
   try {
-    const res = await api('POST', `/api/plans/${planId}/join`);
-    if (!res.ok) {
-      const d = await res.json();
-      return toast('❌ ' + (d.error || 'Error'));
-    }
+    const res = await api('POST', '/api/plans/' + planId + '/join');
+    if (!res.ok) { const d = await res.json(); return toast('❌ ' + (d.error || 'Error')); }
     const updated = await res.json();
     plans = plans.map(p => p._id === planId ? updated : p);
     renderPlans();
     socket?.emit('plan:joined', { planId, userName: currentUser.name });
-    toast(`🎉 Joined "${updated.title}"!`);
-  } catch (_) {
-    toast('❌ Server error');
-  }
+    toast('🎉 Joined "' + updated.title + '"!');
+  } catch (_) { toast('❌ Server error'); }
 }
 
 // ══════════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════════
 function api(method, path, body) {
-  return fetch(BASE_URL + path, {
+  const token = currentSession?.access_token;
+  return fetch(RAILWAY_URL + path, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -1639,7 +1632,7 @@ function showError(msg) {
 }
 
 function updateOnlinePill() {
-  document.getElementById('onlinePill').textContent = `${nearbyUsers.filter(u => u.online).length} online`;
+  document.getElementById('onlinePill').textContent = nearbyUsers.filter(u => u.online).length + ' online';
 }
 </script>
 </body>
